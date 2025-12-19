@@ -5,7 +5,7 @@
 #include "TApplication.h"
 #include "TSystem.h"
 
-#include "assert.h"
+#include <cassert>
 #include <iostream>
 #include <cstdlib>
 #include <cmath>
@@ -13,22 +13,18 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
-
+#include <string>
+#include <iomanip>
 
 using namespace std;
 
-typedef struct {
-    int red, green, blue;
-} COLOR;
+typedef struct { uint8_t red, green, blue; } COLOR;
 
-// fast distance (no sqrt / no pow)
 static inline int color_distance2(int r1,int g1,int b1,int r2,int g2,int b2){
     int dr=r1-r2, dg=g1-g2, db=b1-b2;
-    // weights help a bit
     return 2*dr*dr + 4*dg*dg + 3*db*db;
 }
 
-// pull rgb from UInt_t ARGB
 static inline int R(UInt_t p){ return (p>>16)&0xFF; }
 static inline int G(UInt_t p){ return (p>>8 )&0xFF; }
 static inline int B(UInt_t p){ return (p    )&0xFF; }
@@ -37,46 +33,84 @@ static inline int clampi(int x,int lo,int hi){
     return (x<lo)?lo:((x>hi)?hi:x);
 }
 
-double exponentialCooling(int iteration, int maxIterations) {
-    double T0 = 200000.0;
-    double Tend = 50.0;
-    double t = (double)iteration / (double)(maxIterations-1);
-    return T0 * pow(Tend/T0, t);
+static inline int irand(int lo, int hi){
+    return lo + (rand() % (hi - lo + 1));
 }
 
+static inline double urand01(){
+    return (double)rand() / (double)RAND_MAX;
+}
 
-// propose a swap and compute dE (O(1))
-// also does the swap, so caller must undo if rejected
-static inline int swap_deltaE(vector<COLOR> &sourcepic,
-                             const vector<COLOR> &targetpic,
-                             int a, int b)
+// my: deltaE only (no swap here)
+static inline int deltaE_swap(const vector<COLOR> &sourcepic,
+                              const vector<COLOR> &targetpic,
+                              int a, int b)
 {
     const COLOR &Sa = sourcepic[a];
     const COLOR &Sb = sourcepic[b];
     const COLOR &Ta = targetpic[a];
     const COLOR &Tb = targetpic[b];
 
-    int oldE = color_distance2(Sa.red,Sa.green,Sa.blue, Ta.red,Ta.green,Ta.blue)
-             + color_distance2(Sb.red,Sb.green,Sb.blue, Tb.red,Tb.green,Tb.blue);
+    int oldE = color_distance2((int)Sa.red,(int)Sa.green,(int)Sa.blue, (int)Ta.red,(int)Ta.green,(int)Ta.blue)
+             + color_distance2((int)Sb.red,(int)Sb.green,(int)Sb.blue, (int)Tb.red,(int)Tb.green,(int)Tb.blue);
 
-    int newE = color_distance2(Sb.red,Sb.green,Sb.blue, Ta.red,Ta.green,Ta.blue)
-             + color_distance2(Sa.red,Sa.green,Sa.blue, Tb.red,Tb.green,Tb.blue);
-
-    // do the swap
-    std::swap(sourcepic[a], sourcepic[b]);
+    int newE = color_distance2((int)Sb.red,(int)Sb.green,(int)Sb.blue, (int)Ta.red,(int)Ta.green,(int)Ta.blue)
+             + color_distance2((int)Sa.red,(int)Sa.green,(int)Sa.blue, (int)Tb.red,(int)Tb.green,(int)Tb.blue);
 
     return (newE - oldE);
 }
 
-// compute full energy once (O(N))
-long long total_energy(const vector<COLOR> &sourcepic, const vector<COLOR> &targetpic){
+static long long total_energy(const vector<COLOR> &sourcepic, const vector<COLOR> &targetpic){
     long long E = 0;
     int N = (int)sourcepic.size();
     for(int i=0;i<N;i++){
-        E += color_distance2(sourcepic[i].red,sourcepic[i].green,sourcepic[i].blue,
-                             targetpic[i].red,targetpic[i].green,targetpic[i].blue);
+        E += color_distance2((int)sourcepic[i].red,(int)sourcepic[i].green,(int)sourcepic[i].blue,
+                             (int)targetpic[i].red,(int)targetpic[i].green,(int)targetpic[i].blue);
     }
     return E;
+}
+
+static double EstimateT0_image(const vector<COLOR> &sourcepic,
+                               const vector<COLOR> &targetpic,
+                               int numPix, int W, int H,
+                               int nProbe, double factor,
+                               double pGlobal, int radius0, int radiusMin)
+{
+    vector<int> dEs;
+    dEs.reserve(nProbe);
+
+    for(int k=0;k<nProbe;k++){
+        int a = rand() % numPix;
+        int b = a;
+
+        if (urand01() < pGlobal){
+            b = rand() % numPix;
+        } else {
+            int ax = a % W;
+            int ay = a / W;
+
+            int rad = radius0;
+            if (rad < radiusMin) rad = radiusMin;
+
+            int dx = irand(-rad, rad);
+            int dy = irand(-rad, rad);
+
+            int bx = clampi(ax + dx, 0, W-1);
+            int by = clampi(ay + dy, 0, H-1);
+            b = by*W + bx;
+        }
+
+        if(a==b){ k--; continue; }
+
+        int dE = deltaE_swap(sourcepic, targetpic, a, b);
+        dEs.push_back(std::abs(dE)); // my: stable T0 estimate
+    }
+
+    if(dEs.empty()) return 1.0;
+
+    std::sort(dEs.begin(), dEs.end());
+    int idx = (int)(0.90 * (dEs.size() - 1));
+    return factor * (double)dEs[idx];
 }
 
 int main(int argc, char **argv) {
@@ -88,12 +122,14 @@ int main(int argc, char **argv) {
 
     TString fsrc = argv[1];
     TString ftgt = argv[2];
-    TString fout;
-    argc > 3 ? fout = argv[3] : fout = "newout.png";
 
     bool batchMode=false;
-    for(int i=1;i<argc;i++){
-        if(string(argv[i])=="--batch") batchMode=true;
+    TString fout = "newout.png";
+
+    for(int i=3;i<argc;i++){
+        string a = argv[i];
+        if(a=="--batch") batchMode=true;
+        else if(!a.empty() && a[0] != '-') fout = argv[i];
     }
 
     cout << "Reading images: source= " << fsrc << " target= " << ftgt << endl;
@@ -102,144 +138,181 @@ int main(int argc, char **argv) {
     TApplication theApp("App", &argc, argv);
     if(batchMode) gROOT->SetBatch(kTRUE);
 
-    // create image objects
     TASImage *src = new TASImage(fsrc.Data());
     TASImage *tgt = new TASImage(ftgt.Data());
-    TASImage *out = new TASImage(*src); // start with a copy of the source
+    TASImage *out = new TASImage(*src);
 
-    // Test image geometry, exit if they are not the same dimensions
     assert(src->GetWidth() == tgt->GetWidth() && src->GetHeight() == tgt->GetHeight());
     cout << "Pixel Geometry: " << src->GetWidth() << " x " << src->GetHeight() << endl;
 
     Long_t numPixL = (Long_t)src->GetWidth() * (Long_t)src->GetHeight();
     int numPix = (int)numPixL;
 
-    // *** The work happens here
-
     UInt_t *srcPix = src->GetArgbArray();
     UInt_t *tgtPix = tgt->GetArgbArray();
     UInt_t *outPix = out->GetArgbArray();
 
-    // use vectors (stack will die for 1080p)
     vector<COLOR> sourcepic(numPix);
     vector<COLOR> targetpic(numPix);
     vector<COLOR> bestpic(numPix);
 
-    // init from images (this was missing)
     for(int i=0;i<numPix;i++){
-        sourcepic[i].red   = R(srcPix[i]);
-        sourcepic[i].green = G(srcPix[i]);
-        sourcepic[i].blue  = B(srcPix[i]);
+        sourcepic[i].red   = (uint8_t)R(srcPix[i]);
+        sourcepic[i].green = (uint8_t)G(srcPix[i]);
+        sourcepic[i].blue  = (uint8_t)B(srcPix[i]);
 
-        targetpic[i].red   = R(tgtPix[i]);
-        targetpic[i].green = G(tgtPix[i]);
-        targetpic[i].blue  = B(tgtPix[i]);
+        targetpic[i].red   = (uint8_t)R(tgtPix[i]);
+        targetpic[i].green = (uint8_t)G(tgtPix[i]);
+        targetpic[i].blue  = (uint8_t)B(tgtPix[i]);
     }
 
-    // SA state
     srand(12345);
 
+    int W = src->GetWidth();
+    int H = src->GetHeight();
+
+    // my: scale steps with image size (640x480 ~ 15M), cap at 60M
+    long long runsLL = 50LL * (long long)numPix;
+    if (runsLL < 8000000LL)  runsLL = 8000000LL;
+    if (runsLL > 60000000LL) runsLL = 60000000LL;
+    int runs = (int)runsLL;
+
+    double pGlobalMin = 0.03; // my: rare long swaps late
+    double pGlobalMax = 0.20; // my: more mixing early
+
+    int radiusMin = 2;
+    int radius0 = std::max(16, std::min(256, std::max(W, H) / 4));
+
     long long curE  = total_energy(sourcepic, targetpic);
+
+    // my: bestpic should match bestE we print
     long long bestE = curE;
-    bestpic = sourcepic;
+    long long bestCandE = curE;
+    std::memcpy(bestpic.data(), sourcepic.data(), (size_t)numPix * sizeof(COLOR));
+
+    // my: avoid copying bestpic on every tiny improvement
+    int improveSinceSave = 0;
+    const int SAVE_EVERY_IMPROVES = 200;
+    const long long SAVE_MIN_DROP = 3000000;
 
     cout << "start E = " << curE << endl;
 
-    
-    int runs = 8000000; // tune
-    int W = src->GetWidth();
-    int H = src->GetHeight();
-    double pLocal = 0.97;
-    int radius = 16;
-    
+    int nProbe = std::min(50000, numPix);
+    double T0  = EstimateT0_image(sourcepic, targetpic, numPix, W, H,
+                                  nProbe, 1.2, pGlobalMax, radius0, radiusMin);
+
+    // my: not too cold for short runs
+    double Tf = 50.0;
+    if (Tf >= T0) Tf = 0.01 * T0;
+
+    double alpha = exp(log(Tf / T0) / (double)runs);
+    double T = T0;
+
+    cout << "Auto T0 = " << T0 << " (probe=" << nProbe << ")\n";
+    cout.setf(std::ios::fixed);
+    cout << "Tf=" << Tf << " alpha=" << std::setprecision(9) << alpha << "\n";
+
     auto t_start = std::chrono::high_resolution_clock::now();
 
-
     for (int i = 0; i < runs; i++) {
-        double T = exponentialCooling(i, runs);
 
-        // pick two positions (mostly local swaps)
         int a = rand() % numPix;
-        int b;
+        int b = a;
 
-        if (((double)rand()/RAND_MAX) < pLocal){
+        int radiusNow = (int)(radius0 * (T / T0)); // my: big early, small late
+        if (radiusNow < radiusMin) radiusNow = radiusMin;
+
+        double frac = T / T0;
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
+        double pGlobalNow = pGlobalMin + (pGlobalMax - pGlobalMin) * frac;
+
+        if (urand01() < pGlobalNow){
+            b = rand() % numPix;
+        } else {
             int ax = a % W;
             int ay = a / W;
-            int dx = (rand() % (2*radius+1)) - radius;
-            int dy = (rand() % (2*radius+1)) - radius;
+            int dx = irand(-radiusNow, radiusNow);
+            int dy = irand(-radiusNow, radiusNow);
             int bx = clampi(ax + dx, 0, W-1);
             int by = clampi(ay + dy, 0, H-1);
             b = by*W + bx;
-        }else{
-            b = rand() % numPix;
         }
 
-        if (a == b) continue;
+        if (a == b) { T *= alpha; continue; }
 
-        // do swap + get dE
-        int dE = swap_deltaE(sourcepic, targetpic, a, b);
-        long long newE = curE + dE;
+        int dE = deltaE_swap(sourcepic, targetpic, a, b);
+        long long newE = curE + (long long)dE;
 
-        // accept / reject
         bool accept = false;
         if (dE <= 0) accept = true;
         else{
-            double u = (double)rand() / (double)RAND_MAX;
+            double u = urand01();
             if (u < exp(-(double)dE / T)) accept = true;
         }
 
         if (accept){
+            std::swap(sourcepic[a], sourcepic[b]);
             curE = newE;
 
-            if (curE < bestE){
-                bestE = curE;
-                bestpic = sourcepic;
+            if (curE < bestCandE) {
+                bestCandE = curE;
+                improveSinceSave++;
+
+                if (improveSinceSave >= SAVE_EVERY_IMPROVES || (bestE - bestCandE) >= SAVE_MIN_DROP) {
+                    bestE = bestCandE;
+                    std::memcpy(bestpic.data(), sourcepic.data(), (size_t)numPix * sizeof(COLOR));
+                    improveSinceSave = 0;
+                }
             }
-        } else {
-            // undo swap if rejected
-            std::swap(sourcepic[a], sourcepic[b]);
         }
 
+        T *= alpha;
+
         if (i % 100000 == 0) {
-            cout << i << " curE=" << curE << " bestE=" << bestE << endl;
+            cout << i << " T=" << T << " curE=" << curE << " bestE=" << bestE << endl;
         }
     }
-    
+
     auto t_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> dt = t_end - t_start;
 
     cout << "runtime_seconds = " << dt.count() << endl;
     cout << "runtime_minutes = " << dt.count()/60.0 << endl;
 
-
-    // write best image to outPix
     unsigned a255 = 255;
     for (int i = 0; i < numPix; i++) {
-        int rr = clampi(bestpic[i].red,   0, 255);
-        int gg = clampi(bestpic[i].green, 0, 255);
-        int bb = clampi(bestpic[i].blue,  0, 255);
+        int rr = (int)bestpic[i].red;
+        int gg = (int)bestpic[i].green;
+        int bb = (int)bestpic[i].blue;
         outPix[i] = (a255 << 24) | (rr << 16) | (gg << 8) | bb;
-    }
-
-    // *************************
-
-    if(!batchMode){
-        TCanvas *c1 = new TCanvas("c1", "images", 1024, 768);
-        c1->Divide(2, 2);
-
-        c1->cd(1); c1->Draw(); src->Draw("X");
-        c1->cd(2); tgt->Draw("X");
-        c1->cd(3); out->Draw("X");
-        c1->Print("newcollage.png");
     }
 
     out->WriteImage(fout.Data());
 
-    if(batchMode) return 0;
+    TCanvas *c1 = new TCanvas("c1", "images", 1024, 768);
+    c1->Divide(2,2);
 
-    cout << "Press ^c to exit" << endl;
-    theApp.SetIdleTimer(30, ".q");
-    theApp.Run();
+    c1->cd(1); src->Draw("X");
+    c1->cd(2); tgt->Draw("X");
+    c1->cd(3); out->Draw("X");
+
+    auto base = [](TString s){
+      s = gSystem->BaseName(s);
+      s.ReplaceAll(".png","");
+      s.ReplaceAll(".jpg","");
+      s.ReplaceAll(".jpeg","");
+      return s;
+    };
+
+    TString tag = Form("%s_to_%s", base(fsrc).Data(), base(ftgt).Data());
+    c1->Print(Form("collage_%s.png", tag.Data()));
+
+    if (!batchMode) {
+      cout << "Press ^c to exit" << endl;
+      theApp.SetIdleTimer(30,".q");
+      theApp.Run();
+    }
+
     return 0;
 }
-

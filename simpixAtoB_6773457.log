@@ -1,0 +1,10 @@
+make: Nothing to be done for 'all'.
+Reading images: source= A_1920x1080.png target= B_1920x1080.png
+Output= out_AtoB.png
+Pixel Geometry: 1920 x 1080
+Pixels: 2073600
+Runs=414720000 T0=44683.2 Alpha=1
+0% T=44683.2 E=121027766921 bestE=121027766921
+5% T=26172.8 E=103602276973 bestE=103602040833
+10% T=15330.7 E=95912572145 bestE=95912552235
+[2025-12-19T03:55:24.410] error: *** JOB 6773457 ON udc-aw33-5c1 CANCELLED AT 2025-12-19T03:55:24 DUE TO TIME LIMIT ***

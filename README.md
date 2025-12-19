@@ -13,15 +13,40 @@ Usage: simapix_start image1 image2 <output=out.png>
 
 
 
-not completed:
+## Simpix (Simulated Annealing Pixel Swap)
 
-running the code:
+This program takes a source image A and rearranges (swaps) its pixels using simulated annealing to match a target image B.
+Each source pixel is used exactly once.
 
-1. make
+## Images + Resizing
 
-2. sbatch simpix_AtoB.slurm
-   sbatch simpix_BtoA.slurm
+I selected two images A and B and resized them to 1920x1080 using ImageMagick:
 
-first trial run times for A->B: runtime_minutes = 158.403
+convert A.jpg -resize 1920x1080\! A_1920x1080.png
+convert B.jpg -resize 1920x1080\! B_1920x1080.png
 
-first trial run times for B->A: runtime_minutes = 158.05
+## Build
+
+make
+
+## Run (local)
+
+./simpix A_1920x1080.png B_1920x1080.png out_AtoB.png --batch
+./simpix B_1920x1080.png A_1920x1080.png out_BtoA.png --batch
+
+## Run (Rivanna Slurm)
+
+sbatch simpix_AtoB.slurm
+sbatch simpix_BtoA.slurm
+
+## Output files
+
+collage_A_1920x1080_to_B_1920x1080.png
+collage_B_1920x1080_to_A_1920x1080.png
+
+(out images written via the 3rd command-line argument)
+
+## Runtimes
+
+A -> B: runtime_seconds = 37.574716076
+B -> A: runtime_seconds = 34.647599371
